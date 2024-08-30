@@ -2,11 +2,22 @@ import json
 import sys
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QPen, QAction
-from PySide6.QtWidgets import QMainWindow, QApplication, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QAbstractScrollArea, QFileDialog, QCheckBox
+from PySide6.QtWidgets import (
+    QMainWindow, 
+    QApplication, 
+    QTableWidget, 
+    QTableWidgetItem, 
+    QVBoxLayout, 
+    QWidget, 
+    QAbstractScrollArea, 
+    QFileDialog, 
+    QCheckBox, 
+    QSizePolicy
+)
 from PySide6.QtCharts import QChart, QChartView, QPieSeries
 
 
-class BanditPie(QChart):
+class BanditSevPie(QChart):
     def __init__(self, data, filter_high, filter_med, filter_low):
         super().__init__()
 
@@ -37,6 +48,50 @@ class BanditPie(QChart):
             self.series.remove(self.medium_slice)
         if filter_low:
             self.series.remove(self.low_slice)
+
+        self.setTitle("Breakdown By Severity")
+
+        self.addSeries(self.series)
+
+
+class BanditCWEPie(QChart):
+    def __init__(self, data, filter_high, filter_med, filter_low):
+        super().__init__()
+
+        self.series = QPieSeries()
+
+        high_cwes = {}
+        cwes = set()
+        for issue in data['highs']:
+            cwes.add(issue['cwe'])
+        for cwe in cwes:
+            high_cwes[str(cwe)] = sum(issue['cwe'] == cwe for issue in data['highs'])
+            
+        med_cwes = {}
+        cwes = set()
+        for issue in data['mediums']:
+            cwes.add(issue['cwe'])
+        for cwe in cwes:
+            med_cwes[str(cwe)] = sum(issue['cwe'] == cwe for issue in data['mediums'])
+            
+        low_cwes = {}
+        cwes = set()
+        for issue in data['lows']:
+            cwes.add(issue['cwe'])
+        for cwe in cwes:
+            low_cwes[str(cwe)] = sum(issue['cwe'] == cwe for issue in data['lows'])
+
+        if not filter_high:
+            for (cwe, count) in high_cwes.items():
+                self.series.append(f"{cwe}", int(count))
+        if not filter_med:
+            for (cwe, count) in med_cwes.items():
+                self.series.append(f"{cwe}", int(count))
+        if not filter_low:
+            for (cwe, count) in low_cwes.items():
+                self.series.append(f"{cwe}", int(count))
+
+        self.setTitle("Breakdown By CWE ID")
 
         self.addSeries(self.series)
 
@@ -89,20 +144,29 @@ class BanditWindow(QMainWindow):
         self.filter_lows.stateChanged.connect(self.visualise_file)    
 
     def visualise_file(self):
-        self.pie = BanditPie(self.data, 
+        self.sevpie = BanditSevPie(self.data, 
                             self.filter_highs.isChecked(), 
                             self.filter_mediums.isChecked(), 
                             self.filter_lows.isChecked())        
 
-        self._chart_view = QChartView(self.pie)
-        self._chart_view.setRenderHint(QPainter.Antialiasing)
+        self._sev_chart_view = QChartView(self.sevpie)
+        self._sev_chart_view.setRenderHint(QPainter.Antialiasing)
+
+        self.cwepie = BanditCWEPie(self.data, 
+                            self.filter_highs.isChecked(), 
+                            self.filter_mediums.isChecked(), 
+                            self.filter_lows.isChecked())        
+
+        self._cwe_chart_view = QChartView(self.cwepie)
+        self._cwe_chart_view.setRenderHint(QPainter.Antialiasing)
         
         main_layout = QVBoxLayout()
         table = BanditTable(self.data, 
                             self.filter_highs.isChecked(), 
                             self.filter_mediums.isChecked(), 
                             self.filter_lows.isChecked())
-        main_layout.addWidget(self._chart_view)
+        main_layout.addWidget(self._sev_chart_view)
+        main_layout.addWidget(self._cwe_chart_view)
         main_layout.addWidget(table.table)
         main_layout.addWidget(self.filter_highs)
         main_layout.addWidget(self.filter_mediums)
@@ -121,7 +185,7 @@ class BanditWindow(QMainWindow):
         
     def openFile(self):
         for path in self.dialog.selectedFiles():
-            self.data = self.load_data(path)
+            self.load_data(path)
             self.visualise_file()
 
     def select_data(self, issue: dict): 
@@ -135,26 +199,17 @@ class BanditWindow(QMainWindow):
             'test': issue['test_id']
         }
     def load_data(self, file: str):
-        output = {
+        self.data = {
             'highs': [],
             'mediums': [],
-            'lows': [],
-            'cwes': {}
+            'lows': []
         }
         with open(file) as bandit:
             content = json.load(bandit)
             results = content['results']
-            output['highs'] = [self.select_data(issue) for issue in results if issue['issue_severity'] == 'HIGH']
-            output['mediums'] = [self.select_data(issue) for issue in results if issue['issue_severity'] == 'MEDIUM']
-            output['lows'] = [self.select_data(issue) for issue in results if issue['issue_severity'] == 'LOW']
-
-            cwes = set()
-            for issue in results:
-                cwes.add(issue['issue_cwe']['id'])
-            for cwe in cwes:
-                output['cwes'][str(cwe)] = sum(issue['issue_cwe']['id'] == cwe for issue in results)
-
-        return output
+            self.data['highs'] = [self.select_data(issue) for issue in results if issue['issue_severity'] == 'HIGH']
+            self.data['mediums'] = [self.select_data(issue) for issue in results if issue['issue_severity'] == 'MEDIUM']
+            self.data['lows'] = [self.select_data(issue) for issue in results if issue['issue_severity'] == 'LOW']
 
 
 if __name__ == "__main__":
@@ -170,7 +225,11 @@ if __name__ == "__main__":
     file_menu = menu.addMenu("&File")
     file_menu.addAction(file_btn)
 
+    screen_size = window.screen().size()
+    win_height = screen_size.height() * 0.6
+    win_width = screen_size.width() * 0.6
+
     window.show()
-    window.resize(640, 480)
+    window.resize(win_width, win_height)
 
     sys.exit(app.exec())
